@@ -12,34 +12,35 @@ import paho.mqtt.client as mqtt
 from flask import Flask, render_template, Response, send_file
 
 import av
-logging.getLogger('libav').setLevel(logging.ERROR) #disable warnings from FFMPEG when processing rtsp streams
+
+logging.getLogger("libav").setLevel(logging.ERROR)  # disable warnings from FFMPEG when processing rtsp streams
 
 import detect_image
 
-FPS=4 #frames per second in the MJPEG stream
-PF=0.2 #percentage of frames processed from the rtsp stream 
+FPS = 4  # frames per second in the MJPEG stream
+PF = 0.2  # percentage of frames processed from the rtsp stream
 
-CAMERA_URL = os.getenv('CAMERA', 'rtsp://admin@192.168.1.96:554/user=admin_password=_channel=0_stream=0.sdp')
-MODEL_FILE = os.getenv('MODEL_FILE', "models/ssd_mobilenet_v2_coco_quant_postprocess_edgetpu.tflite")
-LABELS_FILE = os.getenv('LABELS_FILE', "models/coco_labels.txt")
-MQTT_BASE_TOPIC = os.getenv('MQTT_BASE_TOPIC', 'cusca')
-MQTT_SERVER = os.getenv('MQTT_SERVER', '192.168.1.100')
-BUFFER_SIZE = os.getenv('BUFFER_SIZE', 24)
+CAMERA_URL = os.getenv("CAMERA", "rtsp://admin@192.168.1.96:554/user=admin_password=_channel=0_stream=0.sdp")
+MODEL_FILE = os.getenv("MODEL_FILE", "models/ssd_mobilenet_v2_coco_quant_postprocess_edgetpu.tflite")
+LABELS_FILE = os.getenv("LABELS_FILE", "models/coco_labels.txt")
+MQTT_BASE_TOPIC = os.getenv("MQTT_BASE_TOPIC", "cusca")
+MQTT_SERVER = os.getenv("MQTT_SERVER", "192.168.1.164")
+BUFFER_SIZE = os.getenv("BUFFER_SIZE", 24)
 
-CONF_ARMED = 'armed'
-CONF_MJPEG_FPS = 'mjpeg_fps'
-CONF_PF = 'percentage_processed_frames'
-CONF_THRESHOLD = 'threshold'
-CONF_EVENT_BUFFER = 'buffer'
+CONF_ARMED = "armed"
+CONF_MJPEG_FPS = "mjpeg_fps"
+CONF_PF = "percentage_processed_frames"
+CONF_THRESHOLD = "threshold"
+CONF_EVENT_BUFFER = "buffer"
 
-DBG_LEVEL = os.getenv('LOGGING_LEVEL', 'INFO').upper()
+DBG_LEVEL = os.getenv("LOGGING_LEVEL", "INFO").upper()
 logging.basicConfig(level=DBG_LEVEL, format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
 class Camera(object):
-    def __init__(self, url, callback = None):
-        self.engine = detect_image.Engine(MODEL_FILE, LABELS_FILE )
+    def __init__(self, url, callback=None):
+        self.engine = detect_image.Engine(MODEL_FILE, LABELS_FILE)
         self.rtsp_url = url
         self.frames = SimpleQueue()
         self.callback = callback
@@ -49,14 +50,14 @@ class Camera(object):
         self.configuration = {
             CONF_ARMED: True,
             CONF_MJPEG_FPS: FPS,
-            CONF_PF: PF, 
+            CONF_PF: PF,
             CONF_THRESHOLD: detect_image.TF_THRESHOLD,
             CONF_EVENT_BUFFER: BUFFER_SIZE,
         }
 
         self.set_buffer()
 
-    def set_buffer(self, buffer_size = BUFFER_SIZE):
+    def set_buffer(self, buffer_size=BUFFER_SIZE):
         self.current_event = deque(maxlen=buffer_size)
         self.last_events = deque(maxlen=buffer_size)
         self.cycle = deque(maxlen=buffer_size)
@@ -76,16 +77,16 @@ class Camera(object):
         container = av.open(self.rtsp_url)
 
         # Experiments to improve CPU performance
-        #container.streams.video[0].thread_type = 'AUTO'
-        #container.streams.video[0].codec_context.skip_frame = 'NONKEY'
+        # container.streams.video[0].thread_type = 'AUTO'
+        # container.streams.video[0].codec_context.skip_frame = 'NONKEY'
 
-        #Init screen
+        # Init screen
         self.last_events.append(next(container.decode(video=0)).to_image())
         self.cycle = self.last_events.copy()
 
         fc = 0
         for frame in container.decode(video=0):
-            fc = (fc+1)%(1/PF)
+            fc = (fc + 1) % (1 / PF)
             if fc == 0:
                 self.frames.put(frame)
 
@@ -98,7 +99,7 @@ class Camera(object):
                 d_img, prob = self.engine.detect_image(img, threshold=self.configuration[CONF_THRESHOLD])
             else:
                 d_img, prob = img, 0
-    
+
             if d_img:
                 self.event_detected = True
                 self.current_event.append(d_img)
@@ -107,57 +108,66 @@ class Camera(object):
             else:
                 self.event_detected = False
 
-            if not self.event_detected and len(self.current_event) or \
-                len(self.current_event) == self.current_event.maxlen: 
-                
+            if (
+                not self.event_detected
+                and len(self.current_event)
+                or len(self.current_event) == self.current_event.maxlen
+            ):
+
                 self.last_events.extend(self.current_event)
-                self.cycle = self.last_events.copy() #copy which we rotate
+                self.cycle = self.last_events.copy()  # copy which we rotate
                 self.current_event.clear()
 
     def get_frame(self):
         frame = self.cycle[0]
         self.cycle.rotate(-1)
         return frame
-    
+
     def last_frame(self):
         frame = self.last_events[-1]
         return frame
-    
+
+
 app = Flask(__name__)
 
-camera = Camera(CAMERA_URL)  
+camera = Camera(CAMERA_URL)
 
-@app.route('/')
+
+@app.route("/")
 def index():
-    return Response(gen(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-@app.route('/image')
+
+@app.route("/image")
 def image():
     frame = camera.last_frame()
     imgByteArr = io.BytesIO()
-    frame.save(imgByteArr, 'JPEG')
+    frame.save(imgByteArr, "JPEG")
     imgByteArr.seek(0)
 
-    return send_file(imgByteArr, mimetype='image/jpeg')
+    return send_file(imgByteArr, mimetype="image/jpeg")
+
 
 def gen():
     """Generate MJPEG frames."""
     while True:
-        time.sleep(1/camera.configuration[CONF_MJPEG_FPS])
+        time.sleep(1 / camera.configuration[CONF_MJPEG_FPS])
         frame = camera.get_frame()
         imgByteArr = io.BytesIO()
-        frame.save(imgByteArr, format='JPEG')
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + imgByteArr.getvalue() + b'\r\n')
+        frame.save(imgByteArr, format="JPEG")
+        yield (b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + imgByteArr.getvalue() + b"\r\n")
+
 
 def publish_property(client, property, value):
-    client.publish(f"{MQTT_BASE_TOPIC}/{property}",value)
+    client.publish(f"{MQTT_BASE_TOPIC}/{property}", value)
+
 
 def on_connect(client, properties, flags, result):
-    client.publish(MQTT_BASE_TOPIC+"/status","online",retain=True)
+    client.publish(MQTT_BASE_TOPIC + "/status", "online", retain=True)
     for conf in camera.configuration:
         client.publish(f"{MQTT_BASE_TOPIC}/{conf}", camera.configuration[conf])
         client.subscribe(f"{MQTT_BASE_TOPIC}/{conf}", 0)
+
 
 def on_message(client, userdata, message):
     logger.debug("on_message %s = %s", message.topic, str(message.payload))
@@ -169,7 +179,7 @@ def on_message(client, userdata, message):
         else:
             logger.error(f"Could not set buffer size to {message.payload}")
 
-    if CONF_ARMED in message.topic: 
+    if CONF_ARMED in message.topic:
         if "true" in str(message.payload).lower():
             userdata[CONF_ARMED] = True
         else:
@@ -197,8 +207,9 @@ def on_message(client, userdata, message):
         except ValueError:
             logger.error(f"Could not set threshold to {message.payload}")
 
+
 def healthy_loop(func):
-    #used to capture exceptions and restarting (e.g. when the rtsp goes offline)
+    # used to capture exceptions and restarting (e.g. when the rtsp goes offline)
     while True:
         try:
             func()
@@ -206,32 +217,31 @@ def healthy_loop(func):
             logger.error("Error in daemon thread. Restarting in 30sec")
             time.sleep(30)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     mqttc = mqtt.Client(client_id=f"cusca_{random.randint(10, 99)}", userdata=camera.configuration)
-    mqttc.will_set(MQTT_BASE_TOPIC+"/status", "offline",retain=True)
+    mqttc.will_set(MQTT_BASE_TOPIC + "/status", "offline", retain=True)
     mqttc.on_connect = on_connect
     mqttc.on_message = on_message
     mqttc.connect(MQTT_SERVER)
     mqttc.loop_start()
-    
+
     camera.callback = lambda p, v: publish_property(mqttc, p, v)
-    
+
     try:
-        #import cProfile
-        #pr = cProfile.Profile()
-        #pr.enable()
-        
+        # import cProfile
+        # pr = cProfile.Profile()
+        # pr.enable()
+
         c = threading.Thread(target=lambda: healthy_loop(camera.capture_frames), daemon=True)
         p = threading.Thread(target=lambda: healthy_loop(camera.process_frames), daemon=True)
         c.start()
         p.start()
-        app.run(host='0.0.0.0', debug=False)
+        app.run(host="0.0.0.0", debug=False)
     except KeyboardInterrupt:
         pass
-        #pr.disable()
-        #pr.create_stats()
-        #pr.dump_stats("bootstrap.cprof")
+        # pr.disable()
+        # pr.create_stats()
+        # pr.dump_stats("bootstrap.cprof")
     finally:
         mqttc.loop_stop()
-
-
